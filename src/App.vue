@@ -750,7 +750,7 @@ onMounted(() => {
           <AlertDialogDescription class="text-[var(--c-text-muted)]/80">Use the Tantivy query format, e.g., <code class="bg-[var(--c-bg-app)] px-1 rounded font-mono">author.name:Smith AND entity_type:Dataset</code>.</AlertDialogDescription>
         </AlertDialogHeader>
 
-        <div class="flex w-full items-center space-x-2">
+        <div class="flex w-full items-center space-x-2 gap-2">
           <input
             v-model="searchInput"
             @keyup.enter="runSearch"
