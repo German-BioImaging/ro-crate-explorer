@@ -304,6 +304,36 @@ const loadFromUrl = async () => {
 
     if (!summaryResponse.ok) {
       const errText = await summaryResponse.text();
+      if (summaryResponse.status === 409) {
+        let crateIdToFetch = null;
+        try {
+          const errorJson = JSON.parse(errText);
+          const match = errorJson.error.match(/Crate already indexed: (.+)$/i);
+          if (match && match[1]) {
+            crateIdToFetch = match[1];
+          }
+        } catch (parseError) {
+          console.warn('Could not parse 409 error response to extract Crate ID:', parseError);
+        }
+
+        if (crateIdToFetch) {
+          console.info(`Crate already indexed (${crateIdToFetch}). Skipping indexing and attempting to fetch metadata directly.`);
+
+          let crateId = crateIdToFetch;
+          try {
+            const urlObj = new URL(crateId);
+            urlObj.pathname = urlObj.pathname.endsWith('/') ? urlObj.pathname : urlObj.pathname + '/';
+            baseUrl.value = urlObj.href;
+          } catch (e) {
+            // Fallback if crateId isn't a clean URL (e.g., local ID)
+            baseUrl.value = crateId.endsWith('/') ? crateId : crateId + '/';
+          }
+
+          await fetchMetadata(crateId, 'Remote Crate (Indexed)', fetchUrl);
+          return;
+        }
+      }
+      // Re-throw if it's a different error or the 409 couldn't be handled
       throw new Error(`Server Error (${summaryResponse.status}): ${errText}`);
     }
 
@@ -571,7 +601,6 @@ onMounted(() => {
           RO-Crate Explorer
         </h1>
         <div class="flex items-center gap-4">
-          <!-- Search Button -->
           <Button
             v-if="allEntities.length > 0"
             variant="ghost"
@@ -684,7 +713,6 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Linked Entity Details Overlay -->
     <AlertDialog :open="isDetailOverlayOpen" @update:open="isDetailOverlayOpen = $event">
       <AlertDialogContent class="text-[var(--c-text-muted)] bg-[var(--c-bg-card)] border-[var(--c-border)] max-w-4xl max-h-[80vh] overflow-y-auto">
         <button
@@ -708,7 +736,6 @@ onMounted(() => {
       </AlertDialogContent>
     </AlertDialog>
 
-    <!-- Search Overlay -->
     <AlertDialog :open="isSearchOverlayOpen" @update:open="isSearchOverlayOpen = $event">
       <AlertDialogContent class="text-[var(--c-text-muted)] bg-[var(--c-bg-card)] border-[var(--c-border)] !max-w-xl max-h-[80vh] overflow-y-auto">
         <button
@@ -741,7 +768,6 @@ onMounted(() => {
           {{ searchErrorMsg }}
         </div>
 
-        <!-- Renders only if search has run AND results were found -->
         <div v-if="searchResults.length > 0" class="mt-4 p-2 bg-[var(--c-bg-app)] rounded border border-[var(--c-border)] max-h-[30vh] overflow-y-auto">
           <p class="text-xs font-bold text-[var(--c-text-muted)]/80 uppercase tracking-wider mb-1 px-1">{{ searchResults.length }} result(s) found</p>
           <div class="flex flex-col gap-1">
@@ -757,7 +783,6 @@ onMounted(() => {
             </button>
           </div>
         </div>
-        <!-- Renders if search has run, no results were found, and we are not currently searching -->
         <div v-else-if="hasSearched && !isSearching" class="mt-4 p-2 text-center text-sm text-[var(--c-text-muted)]/60">
           No results found for the last query.
         </div>
