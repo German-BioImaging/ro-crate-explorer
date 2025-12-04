@@ -36,6 +36,8 @@ const emit = defineEmits<{
 
 const isCopied = ref(false)
 
+const currentEntityIsDataset = computed(() => props.type.includes('Dataset'));
+
 const knownEntityIds = computed(() => {
   if (!props.fullCrateJson) return new Set<string>();
   try {
@@ -69,6 +71,23 @@ const getValue = (propString: string) => {
   return rawValue;
 };
 
+const getLinkedEntityType = (entityId: string): string[] => {
+  if (!props.fullCrateJson) return [];
+  try {
+    const json = JSON.parse(props.fullCrateJson);
+    const graph = json['@graph'] || [];
+    const linkedEntity = graph.find((e: any) => e['@id'] === entityId);
+    if (linkedEntity && linkedEntity['@type']) {
+      return Array.isArray(linkedEntity['@type']) ? linkedEntity['@type'] : [linkedEntity['@type']];
+    }
+  } catch (e) {
+    console.error("Failed to parse fullCrateJson:", e);
+  }
+  return [];
+};
+
+
+// Detects subcrates explicitly linked via ro-crate-metadata.json
 const isSubcrateLink = (key: string, value: any): boolean => {
   if (key.toLowerCase() === 'subjectof') {
     const valToCheck = Array.isArray(value) ? value[0] : value;
@@ -82,6 +101,19 @@ const isSubcrateLink = (key: string, value: any): boolean => {
     if (valToCheck['@id'].endsWith('ro-crate-metadata.json')) {
       return true;
     }
+  }
+
+  return false;
+};
+
+// NEW: Detects subcrates structurally via hasPart where the part is a Dataset
+const isStructuralSubcrate = (key: string, item: any): boolean => {
+  if (key.toLowerCase() !== 'haspart') return false;
+  if (!currentEntityIsDataset.value) return false;
+
+  if (item && item['@id']) {
+    const types = getLinkedEntityType(item['@id']);
+    return types.includes('Dataset');
   }
 
   return false;
@@ -304,7 +336,7 @@ const normalizeValues = (val: any) => {
             <div class="flex flex-col gap-2">
               <div v-for="(item, i) in normalizeValues(getValue(propString))" :key="i" class="min-w-0">
 
-                <div v-if="isSubcrateLink(getKey(propString), item)" class="flex items-center gap-2 p-2 bg-[var(--c-bg-app)] rounded border border-[var(--c-border)]">
+                <div v-if="isSubcrateLink(getKey(propString), item) || isStructuralSubcrate(getKey(propString), item)" class="flex items-center gap-2 p-2 bg-[var(--c-bg-app)] rounded border border-[var(--c-border)]">
                   <span class="text-[#00A0CC] font-medium break-all flex-1 min-w-0">{{ item['@id'] }}</span>
                   <Button
                     size="sm"

@@ -73,6 +73,16 @@ const isLoading = ref(false)
 const baseUrl = ref<string>('')
 const errorMsg = ref<string | null>(null)
 
+// --- Search State ---
+const isSearchOverlayOpen = ref(false)
+const searchInput = ref<string>('')
+const searchResults = ref<string[]>([])
+const isSearching = ref(false)
+const searchErrorMsg = ref<string | null>(null)
+// Track if a search has ever been performed in the current session
+const hasSearched = ref(false)
+// --------------------
+
 // Theme State
 const isDark = ref(true)
 
@@ -259,6 +269,8 @@ const fetchMetadata = async (crateId: string, sourceName: string, sourceUrl: str
 
     const metadataEndpoint = `${INDEXING_SERVICE_BASE_URL}/crates/${encodeURIComponent(apiCrateId)}`;
 
+    console.log(`Fetching ${sourceName} from ${metadataEndpoint}`);
+
     const response = await fetch(metadataEndpoint);
 
     if (!response.ok) {
@@ -267,6 +279,7 @@ const fetchMetadata = async (crateId: string, sourceName: string, sourceUrl: str
     }
 
     const metadataJson = await response.json();
+    console.log("Fetched Metadata: ", metadataJson);
     processCrateData(metadataJson, sourceName, sourceUrl);
   } catch (e: any) {
     throw new Error(`Metadata fetch failed: ${e.message}`);
@@ -356,6 +369,72 @@ const handleFileUpload = async (event: Event) => {
   }
 };
 
+// --- Logic: Search ---
+const runSearch = async () => {
+  if (!searchInput.value) {
+    searchResults.value = [];
+    hasSearched.value = false; // Reset if query is empty
+    return;
+  }
+
+  isSearching.value = true;
+  searchErrorMsg.value = null;
+  searchResults.value = [];
+  hasSearched.value = true; // Set to true right before running search
+
+  try {
+    // Construct the URL with query parameters 'q' and 'limit'
+    const limit = 50; // Set a reasonable limit for displayed results
+    const queryParams = new URLSearchParams({
+      q: searchInput.value,
+      limit: String(limit),
+    }).toString();
+
+    const searchUrl = `${INDEXING_SERVICE_BASE_URL}/search?${queryParams}`;
+
+    const response = await fetch(searchUrl, {
+      method: 'GET', // Use GET method
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Search failed (${response.status}): ${errText}`);
+    }
+
+    const data = await response.json();
+
+    if (data && Array.isArray(data.hits)) {
+      // Map the array of hit objects to an array of entity_id strings
+      searchResults.value = data.hits.map((hit: any) => hit.entity_id);
+    } else {
+      // If 'data' is null, not an object, or 'hits' isn't an array, throw the error.
+      throw new Error("Invalid search response format. Expected an object with a 'hits' array.");
+    }
+
+  } catch (e: any) {
+    searchErrorMsg.value = e.message;
+    searchResults.value = [];
+  } finally {
+    isSearching.value = false;
+  }
+}
+
+const handleSearchSelect = (entityId: string) => {
+  // 1. Select the entity in the main view
+  selectEntity(entityId);
+  // 2. Close the search overlay
+  isSearchOverlayOpen.value = false;
+  // 3. Clear search state and reset hasSearched
+  searchInput.value = '';
+  searchResults.value = [];
+  searchErrorMsg.value = null;
+  hasSearched.value = false;
+}
+// ---------------------
+
 // --- Logic: Navigation & Actions ---
 const selectEntity = (id: string) => {
   selectedEntityId.value = id;
@@ -372,9 +451,14 @@ const handleSelectLink = (entityId: string) => {
 
 const handleSubcrateOpen = (subcrateId: string) => {
   if (!baseUrl.value) {
-    alert("Subcrate navigation is currently only supported for URL-loaded crates.");
+    // Using console.error instead of alert per instructions
+    console.error("Cannot determine the base crate identifier for subcrate navigation.");
     return;
   }
+
+  // Preserve the current state for history navigation
+  const currentHistoryUrl = currentUrl.value || baseUrl.value;
+  historyStack.value.push({ name: currentCrateName.value, url: currentHistoryUrl });
 
   let apiCrateId = subcrateId;
 
@@ -402,16 +486,18 @@ const handleSubcrateOpen = (subcrateId: string) => {
 
   if (apiCrateId === '') apiCrateId = '.';
 
-  let nextUrl = new URL(subcrateId, baseUrl.value).href;
+  // FIX: Redefine baseUrl to the ID of the subcrate we just navigated to.
+  // This is crucial for resolving subsequent relative paths correctly.
+  baseUrl.value = apiCrateId.endsWith('/') ? apiCrateId : apiCrateId + '/';
 
-  historyStack.value.push({ name: currentCrateName.value, url: currentUrl.value });
-
-  currentUrl.value = nextUrl;
+  // Update inputUrl (for future loadFromUrl calls) and currentUrl (for display)
+  inputUrl.value = apiCrateId;
+  currentUrl.value = baseUrl.value; // Use the new base URL for history tracking
 
   isLoading.value = true;
   errorMsg.value = null;
 
-  fetchMetadata(apiCrateId, 'Subcrate', nextUrl).finally(() => {
+  fetchMetadata(apiCrateId, 'Subcrate', baseUrl.value).finally(() => {
     isLoading.value = false;
   });
 };
@@ -440,7 +526,14 @@ const resetApp = () => {
   historyStack.value = [];
   currentUrl.value = null;
   errorMsg.value = null;
+  baseUrl.value = '';
   inputUrl.value = 'https://rocrate.s3.computational.bio.uni-giessen.de/ro-crate-metadata.json';
+
+  // Also reset search state when loading a new crate
+  searchInput.value = '';
+  searchResults.value = [];
+  searchErrorMsg.value = null;
+  hasSearched.value = false;
 };
 
 onMounted(() => {
@@ -478,6 +571,18 @@ onMounted(() => {
           RO-Crate Explorer
         </h1>
         <div class="flex items-center gap-4">
+          <!-- Search Button -->
+          <Button
+            v-if="allEntities.length > 0"
+            variant="ghost"
+            size="sm"
+            class="h-9 w-9 p-0 rounded-full border border-[var(--c-border)] hover:bg-[var(--c-hover)] text-[var(--c-text-muted)] hover:text-[var(--c-text-main)]"
+            @click="isSearchOverlayOpen = true"
+            title="Search Crate"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </Button>
+
           <Button
             variant="ghost"
             size="sm"
@@ -579,6 +684,7 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- Linked Entity Details Overlay -->
     <AlertDialog :open="isDetailOverlayOpen" @update:open="isDetailOverlayOpen = $event">
       <AlertDialogContent class="text-[var(--c-text-muted)] bg-[var(--c-bg-card)] border-[var(--c-border)] max-w-4xl max-h-[80vh] overflow-y-auto">
         <button
@@ -599,6 +705,66 @@ onMounted(() => {
           </div>
         </div>
         <AlertDialogFooter><AlertDialogAction class="bg-[#00A0CC] hover:bg-[#00A0CC]/80 text-white" @click="isDetailOverlayOpen = false">Close</AlertDialogAction></AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
+    <!-- Search Overlay -->
+    <AlertDialog :open="isSearchOverlayOpen" @update:open="isSearchOverlayOpen = $event">
+      <AlertDialogContent class="text-[var(--c-text-muted)] bg-[var(--c-bg-card)] border-[var(--c-border)] !max-w-xl max-h-[80vh] overflow-y-auto">
+        <button
+          class="absolute right-4 top-4 p-1 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none hover:bg-[var(--c-hover)] text-[var(--c-text-muted)]"
+          @click="isSearchOverlayOpen = false"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          <span class="sr-only">Close</span>
+        </button>
+        <AlertDialogHeader>
+          <AlertDialogTitle class="text-[var(--c-text-main)]">Search RO-Crate Entities</AlertDialogTitle>
+          <AlertDialogDescription class="text-[var(--c-text-muted)]/80">Use the Tantivy query format, e.g., <code class="bg-[var(--c-bg-app)] px-1 rounded font-mono">author.name:Smith AND entity_type:Dataset</code>.</AlertDialogDescription>
+        </AlertDialogHeader>
+
+        <div class="flex w-full items-center space-x-2">
+          <input
+            v-model="searchInput"
+            @keyup.enter="runSearch"
+            type="text"
+            class="flex h-10 w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg-app)] text-[var(--c-text-main)] px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00A0CC] placeholder:text-gray-500"
+            placeholder="Search query..."
+          />
+          <Button class="h-10 px-4 bg-[#00A0CC] hover:bg-[#00A0CC]/80 text-white flex-shrink-0" @click="runSearch" :disabled="isSearching || !searchInput">
+            <svg v-if="isSearching" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            Search
+          </Button>
+        </div>
+
+        <div v-if="searchErrorMsg" class="w-full bg-red-900/20 border border-red-800 text-red-400 px-3 py-2 text-sm rounded mt-2" role="alert">
+          {{ searchErrorMsg }}
+        </div>
+
+        <!-- Renders only if search has run AND results were found -->
+        <div v-if="searchResults.length > 0" class="mt-4 p-2 bg-[var(--c-bg-app)] rounded border border-[var(--c-border)] max-h-[30vh] overflow-y-auto">
+          <p class="text-xs font-bold text-[var(--c-text-muted)]/80 uppercase tracking-wider mb-1 px-1">{{ searchResults.length }} result(s) found</p>
+          <div class="flex flex-col gap-1">
+            <button
+              v-for="id in searchResults"
+              :key="id"
+              @click="handleSearchSelect(id)"
+              class="w-full text-left p-2 text-sm rounded-md hover:bg-[var(--c-hover)] transition-colors text-[var(--c-text-main)] truncate font-mono"
+              :class="{'bg-[var(--c-hover)] text-[#00A0CC] font-semibold': selectedEntityId === id}"
+              :title="id"
+            >
+              {{ id }}
+            </button>
+          </div>
+        </div>
+        <!-- Renders if search has run, no results were found, and we are not currently searching -->
+        <div v-else-if="hasSearched && !isSearching" class="mt-4 p-2 text-center text-sm text-[var(--c-text-muted)]/60">
+          No results found for the last query.
+        </div>
+
+        <AlertDialogFooter>
+          <AlertDialogAction class="bg-[#00A0CC] hover:bg-[#00A0CC]/80 text-white" @click="isSearchOverlayOpen = false">Close</AlertDialogAction>
+        </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
 
