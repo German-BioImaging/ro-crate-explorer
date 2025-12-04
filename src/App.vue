@@ -82,6 +82,9 @@ const searchErrorMsg = ref<string | null>(null)
 const hasSearched = ref(false)
 // --------------------
 
+// MODIFIED: Context Filter State to use a string for input
+const contextFilterInput = ref<string>('');
+
 // Theme State
 const isDark = ref(true)
 
@@ -197,6 +200,8 @@ const fileTree = computed(() => {
 
 const otherEntitiesGroups = computed(() => {
   const groups: Record<string, any[]> = {};
+  const filterText = contextFilterInput.value.trim().toLowerCase();
+
   allEntities.value.forEach(entity => {
     const types = Array.isArray(entity['@type']) ? entity['@type'] : [entity['@type']];
     const isTreeItem = types.includes('File') || types.includes('Dataset');
@@ -206,7 +211,28 @@ const otherEntitiesGroups = computed(() => {
       groups[mainType].push(entity);
     }
   });
-  return groups;
+
+  const filteredGroups: Record<string, any[]> = {};
+  for (const groupName in groups) {
+    if (!filterText || groupName.toLowerCase().includes(filterText)) {
+      filteredGroups[groupName] = groups[groupName];
+    }
+  }
+
+  return filteredGroups;
+});
+
+const contextEntityTypes = computed(() => {
+  const types = new Set<string>();
+  allEntities.value.forEach(entity => {
+    const entityTypes = Array.isArray(entity['@type']) ? entity['@type'] : [entity['@type']];
+    const isTreeItem = entityTypes.includes('File') || entityTypes.includes('Dataset');
+    if (!isTreeItem) {
+      const mainType = entityTypes[0] || 'Unknown';
+      types.add(mainType);
+    }
+  });
+  return ['All', ...Array.from(types).sort()];
 });
 
 // --- Logic: Data Processing ---
@@ -239,6 +265,7 @@ const processCrateData = (json: any, sourceName: string, sourceUrl: string | nul
     selectedEntityId.value = './';
     selectedEntityData.value = null;
     errorMsg.value = null;
+    contextFilterInput.value = '';
 
     try {
       crate.value = new ROCrate(json, { array: true, link: true });
@@ -557,6 +584,7 @@ const resetApp = () => {
   errorMsg.value = null;
   baseUrl.value = '';
   inputUrl.value = 'https://rocrate.s3.computational.bio.uni-giessen.de/ro-crate-metadata.json';
+  contextFilterInput.value = ''; // MODIFIED: Reset filter input on app reset
 
   // Also reset search state when loading a new crate
   searchInput.value = '';
@@ -691,7 +719,16 @@ onMounted(() => {
               <FileTreeItem :node="fileTree" :selectedId="selectedEntityId" @select="selectEntity" />
             </div>
             <div class="h-1 bg-[var(--c-bg-app)] border-t border-b border-[var(--c-border)]"></div>
-            <div class="p-3 bg-[var(--c-bg-app)] border-b border-[var(--c-border)] flex-shrink-0"><h2 class="text-xs font-bold text-[var(--c-text-muted)]/80 uppercase tracking-wider">Context</h2></div>
+
+            <div class="p-3 bg-[var(--c-bg-app)] border-b border-[var(--c-border)] flex-shrink-0 flex flex-col gap-2">
+              <h2 class="text-xs font-bold text-[var(--c-text-muted)]/80 uppercase tracking-wider">Context Entities</h2>
+              <input
+                v-model="contextFilterInput"
+                type="text"
+                class="flex h-7 w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg-card)] text-[var(--c-text-main)] px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00A0CC] placeholder:text-gray-500/80"
+                placeholder="Filter by Type (e.g., Person, Organization)"
+              />
+            </div>
             <div class="flex-1 overflow-y-auto p-2">
               <div v-for="(entities, groupName) in otherEntitiesGroups" :key="groupName" class="mb-4">
                 <h3 class="text-[10px] font-bold text-[#00A0CC] uppercase mb-1 px-2 tracking-widest">{{ groupName }}</h3>
